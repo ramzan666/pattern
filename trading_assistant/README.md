@@ -3,6 +3,8 @@
 Основной код: [trend_retest.pine](trend_retest.pine).
 Для вставки в редактор: [trend_retest.txt](trend_retest.txt).
 
+Если бота и сервера пока нет, начните с [пошаговой инструкции с нуля](START_HERE.md).
+
 ## Запуск в TradingView
 
 1. Откройте обычные свечи BTC/USDT или ETH/USDT на **1H**. Выберите
