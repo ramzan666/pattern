@@ -118,11 +118,11 @@ f_emit(string kind, string id, int sequence, int phase, int side, int trend, flo
         string eventId = kind == "context" ? syminfo.tickerid + "|" + configId + "|context|" + str.tostring(time_close) + (barstate.isconfirmed ? "|close" : "|bootstrap|" + str.tostring(timenow)) : id + "|" + kind
         string direction = side == 1 ? "long" : side == -1 ? "short" : "none"
         string eventTitle = kind == "setup" ? "Сценарий готов" : kind == "trigger" ? "Условие входа выполнено в модели" : kind == "cancel" ? "Сценарий отменён" : kind == "exit" ? "Сценарий завершён в модели" : kind == "breakout" ? "Пробой подтверждён, ждём ретест" : "Обновление тренда 4H"
-        string text = syminfo.tickerid + " · " + eventTitle + "\nТренд: " + (trend == 1 ? "бычий" : trend == -1 ? "медвежий" : "нейтральный") + "\n" + reason
+        string alertMessage = syminfo.tickerid + " · " + eventTitle + "\nТренд: " + (trend == 1 ? "бычий" : trend == -1 ? "медвежий" : "нейтральный") + "\n" + reason
         if not na(entry)
-            text := text + "\n" + str.upper(direction) + " · Вход " + str.tostring(entry, format.mintick) + " · SL " + str.tostring(stop, format.mintick) + " · TP " + str.tostring(target, format.mintick) + " · " + str.tostring(rewardRisk, "#.##") + "R"
+            alertMessage := alertMessage + "\n" + str.upper(direction) + " · Вход " + str.tostring(entry, format.mintick) + " · SL " + str.tostring(stop, format.mintick) + " · TP " + str.tostring(target, format.mintick) + " · " + str.tostring(rewardRisk, "#.##") + "R"
         string payload = "{\"schema_version\":1,\"strategy\":\"trend_retest_v1\",\"secret\":" + f_jsonText(webhookSecret) + ",\"event_id\":" + f_jsonText(eventId) + ",\"setup_id\":" + f_jsonText(id) + ",\"sequence\":" + str.tostring(nextSequence) + ",\"event\":" + f_jsonText(kind) + ",\"stage\":" + f_jsonText(f_stage(phase)) + ",\"symbol\":" + f_jsonText(syminfo.tickerid) + ",\"timeframe\":\"60\",\"direction\":" + f_jsonText(direction) + ",\"trend\":" + f_jsonText(f_trend(trend)) + ",\"event_time\":" + str.tostring(timenow) + ",\"bar_time\":" + str.tostring(time) + ",\"entry\":" + f_number(entry) + ",\"stop\":" + f_number(stop) + ",\"target\":" + f_number(target) + ",\"rr\":" + f_number(na(entry) ? na : rewardRisk) + ",\"risk_pct\":" + f_number(plannedRisk) + ",\"expires_at\":" + f_integer(expiresAt) + ",\"reason\":" + f_jsonText(reason) + "}"
-        alert(deliveryMode == "TradingView" ? text : payload, alert.freq_all)
+        alert(deliveryMode == "TradingView" ? alertMessage : payload, alert.freq_all)
     nextSequence
 
 // Линейный USD/USDT-инструмент; стоимость ограничена доступным капиталом.
