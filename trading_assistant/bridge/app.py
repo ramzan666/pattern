@@ -270,8 +270,8 @@ class TelegramSender:
         self.url = "https://api.telegram.org/bot" + token + "/"
         self.chat_id = chat_id
 
-    def send(self, message, reply_markup=None):
-        payload = {"chat_id": self.chat_id, "text": message, "parse_mode": "HTML",
+    def send(self, message, reply_markup=None, chat_id=None):
+        payload = {"chat_id": self.chat_id if chat_id is None else chat_id, "text": message, "parse_mode": "HTML",
                    "disable_web_page_preview": True}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup

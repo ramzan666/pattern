@@ -32,10 +32,11 @@ def normalize_command(message):
     return BUTTON_COMMANDS.get(text, text)
 
 
-def menu_keyboard(store):
+def menu_keyboard(store, can_manage=True):
     rows = [["₿ BTC", "Ξ ETH"], ["📊 Статус", "❓ Помощь"]]
     if store.source == "exchange":
-        rows.insert(1, ["⏱ 15м", "⏱ 1H"])
+        if can_manage:
+            rows.insert(1, ["⏱ 15м", "⏱ 1H"])
         rows.insert(2, ["🌍 Обзор рынка", "💬 Ассистент"])
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True,
             "one_time_keyboard": False, "input_field_placeholder": "Выберите действие"}
@@ -81,10 +82,14 @@ def describe(data, now_ms, max_age, compact=False):
     return "\n".join(text)
 
 
-def reply(store, message, now_ms):
+def reply(store, message, now_ms, can_manage=True):
     message = normalize_command(message)
     command = message.strip().split(maxsplit=1)[0].lower().split("@")[0] if message.strip() else ""
-    help_text = HELP + ("\n/market — обзор наблюдаемых пар.\n/tf15 — сигналы 15м, тренд 1H; /tf1h — сигналы 1H, тренд 4H." if store.source == "exchange" else "")
+    help_text = HELP
+    if store.source == "exchange":
+        help_text += "\n/market — обзор наблюдаемых пар."
+        if can_manage:
+            help_text += "\n/tf15 — сигналы 15м, тренд 1H; /tf1h — сигналы 1H, тренд 4H."
     if store.source == "exchange":
         if command in ("/assistant", "/help"):
             return ASSISTANT_HELP
@@ -137,9 +142,15 @@ def reply(store, message, now_ms):
 
 
 class CommandWorker:
-    def __init__(self, store, sender, command_handler=None):
+    def __init__(self, store, sender, command_handler=None, allowed_chat_ids=(), public=False):
         self.store, self.sender = store, sender
         self.command_handler = command_handler
+        self.public = public
+        self.allowed_chat_ids = {str(sender.chat_id)}
+        for chat_id in allowed_chat_ids:
+            if not re.fullmatch(r"[0-9]+", str(chat_id)) or int(chat_id) <= 0:
+                raise ValueError("Для дополнительного профиля нужен положительный числовой ID личного чата")
+            self.allowed_chat_ids.add(str(chat_id))
         self.stop = threading.Event()
 
     def poll_once(self, now_ms=None):
@@ -153,15 +164,33 @@ class CommandWorker:
             message = update.get("message", {})
             chat = message.get("chat", {}) if isinstance(message, dict) else {}
             source = message.get("from", {}) if isinstance(message, dict) else {}
-            if isinstance(chat, dict) and isinstance(source, dict) and str(chat.get("id", "")) == str(self.sender.chat_id):
+            if isinstance(chat, dict) and isinstance(source, dict):
                 text = message.get("text")
                 if isinstance(text, str) and not source.get("is_bot", False):
                     text = normalize_command(text)
+                    chat_id = str(chat.get("id", ""))
+                    authorized = chat_id in self.allowed_chat_ids
+                    private = chat.get("type") == "private" and chat_id.isdigit() and int(chat_id) > 0
+                    can_access = authorized or (self.public and private)
+                    command = text.strip().split(maxsplit=1)[0].lower().split("@")[0] if text.strip() else ""
+                    identity_request = (command == "/id" or (command == "/start" and not can_access)) and private
+                    if not can_access and not identity_request:
+                        self.store.save_command_offset(update_id + 1)
+                        continue
                     try:
-                        answer = self.command_handler(text) if self.command_handler else None
-                        self.sender.send(answer if answer is not None else
-                                         reply(self.store, text, int(time.time() * 1000) if now_ms is None else now_ms),
-                                         reply_markup=menu_keyboard(self.store))
+                        if identity_request:
+                            answer = f"👋 Твой Telegram ID: <code>{chat_id}</code>"
+                            if not can_access:
+                                answer += "\n\nЭтот профиль пока не подключён. Передай этот ID владельцу бота для добавления доступа."
+                        else:
+                            answer = self.command_handler(text) if self.command_handler and authorized else None
+                            if not authorized and command in ("/tf15", "/tf1h"):
+                                answer = "🔒 Режим общего бота меняет владелец. Нажми «Статус», чтобы увидеть текущий таймфрейм."
+                            if answer is None:
+                                answer = reply(self.store, text, int(time.time() * 1000) if now_ms is None else now_ms,
+                                               can_manage=authorized)
+                        self.sender.send(answer, reply_markup=menu_keyboard(self.store, can_manage=authorized) if can_access else None,
+                                         chat_id=chat_id)
                     except DeliveryError as exc:
                         if exc.retryable:
                             raise

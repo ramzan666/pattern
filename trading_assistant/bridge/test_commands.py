@@ -17,10 +17,12 @@ class CommandSender(FakeSender):
         super().__init__(errors)
         self.updates, self.offsets = updates, []
         self.markups = []
+        self.recipients = []
 
-    def send(self, message, reply_markup=None):
+    def send(self, message, reply_markup=None, chat_id=None):
         super().send(message)
         self.markups.append(reply_markup)
+        self.recipients.append(self.chat_id if chat_id is None else chat_id)
 
     def get_updates(self, offset):
         self.offsets.append(offset)
@@ -28,7 +30,7 @@ class CommandSender(FakeSender):
 
 
 def update(update_id, command="/btc", chat=123, bot=False):
-    return {"update_id": update_id, "message": {"chat": {"id": chat}, "from": {"is_bot": bot}, "text": command}}
+    return {"update_id": update_id, "message": {"chat": {"id": chat, "type": "private"}, "from": {"is_bot": bot}, "text": command}}
 
 
 class CommandTests(unittest.TestCase):
@@ -44,6 +46,52 @@ class CommandTests(unittest.TestCase):
         CommandWorker(self.store, sender).poll_once(NOW)
         self.assertEqual(sender.messages, [])
         self.assertEqual(self.store.command_offset(), 13)
+
+    def test_second_profile_receives_own_replies_and_unknown_only_own_id(self):
+        sender = CommandSender([update(1, "/status", chat=456), update(2, "/tf15", chat=999),
+                                update(3, "/start", chat=999), update(4, "/id", chat=456),
+                                update(5, "/status", chat=123), update(6, "/start", chat=777, bot=True)])
+        seen = []
+        CommandWorker(self.store, sender, command_handler=lambda text: seen.append(text),
+                      allowed_chat_ids=[456]).poll_once(NOW)
+        self.assertEqual(seen, ["/status", "/status"])
+        self.assertEqual(sender.recipients, ["456", "999", "456", "123"])
+        self.assertIn("Этот профиль пока не подключён", sender.messages[1])
+        self.assertNotIn("TradingView", sender.messages[1])
+        self.assertIsNone(sender.markups[1])
+        self.assertEqual(sender.chat_id, "123")
+        self.assertEqual(self.store.command_offset(), 7)
+        with self.assertRaises(ValueError):
+            CommandWorker(self.store, sender, allowed_chat_ids=[-123])
+
+    def test_public_read_access_routes_replies_without_granting_mode_control(self):
+        self.store.source = "exchange"
+        group = update(7, "/start", chat=-999)
+        group["message"]["chat"]["type"] = "group"
+        sender = CommandSender([update(1, "/start", chat=456), update(2, "/status", chat=456),
+                                update(3, "⏱ 15м", chat=456), update(4, "Какой риск?", chat=789),
+                                update(5, "/tf15", chat=123), update(6, "/start", chat=888, bot=True), group])
+        seen = []
+        def handle(text):
+            seen.append(text)
+            return "Режим изменён"
+        CommandWorker(self.store, sender, command_handler=handle, public=True).poll_once(NOW)
+        self.assertEqual(seen, ["/tf15"])
+        self.assertEqual(sender.recipients, ["456", "456", "456", "789", "123"])
+        self.assertIn("Меню бота", sender.messages[0])
+        self.assertNotIn("/tf15", sender.messages[0])
+        self.assertIn("меняет владелец", sender.messages[2])
+        self.assertNotIn(["⏱ 15м", "⏱ 1H"], sender.markups[0]["keyboard"])
+        self.assertIn(["⏱ 15м", "⏱ 1H"], sender.markups[-1]["keyboard"])
+        self.assertEqual(sender.chat_id, "123")
+
+    def test_command_reply_destination_does_not_change_alert_recipient(self):
+        sender = TelegramSender("fake-not-a-token", "123")
+        with patch.object(sender, "call") as call:
+            sender.send("Ответ", chat_id="456")
+            self.assertEqual(call.call_args.args[1]["chat_id"], "456")
+            sender.send("Сигнал")
+            self.assertEqual(call.call_args.args[1]["chat_id"], "123")
 
     def test_no_data_and_command_help(self):
         self.assertIn("Пока нет снимков BTC", reply(self.store, "/btc", NOW))

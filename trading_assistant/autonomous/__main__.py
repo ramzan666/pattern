@@ -86,6 +86,10 @@ def main():
     parser.add_argument("--slippage-ticks", type=int, default=2)
     parser.add_argument("--poll-seconds", type=int, default=15)
     parser.add_argument("--database", default="bybit_assistant.sqlite3")
+    parser.add_argument("--allow-chat", action="append", default=[], metavar="CHAT_ID",
+                        help="Разрешить команды дополнительному личному профилю Telegram; можно повторять")
+    parser.add_argument("--public-bot", action="store_true",
+                        help="Разрешить просмотр и вопросы всем личным чатам; управление режимом только владельцу и --allow-chat")
     parser.add_argument("--env-file", help="Явно загрузить файл с двумя Telegram-параметрами")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--configure", action="store_true", help="Скрыто запросить токен и сохранить env-файл")
@@ -98,6 +102,8 @@ def main():
             return
         if not 5 <= args.poll_seconds <= 300:
             raise ValueError("Интервал проверки: 5–300 секунд")
+        if any(not re.fullmatch(r"[0-9]+", value) or int(value) <= 0 for value in args.allow_chat):
+            raise ValueError("--allow-chat требует положительный числовой ID личного чата")
         if len(set(args.symbols)) != len(args.symbols) or not 1 <= len(args.symbols) <= 10:
             raise ValueError("Нужны 1–10 разных USDT-пар")
         timeframe = 15 if args.timeframe == "15m" else 60
@@ -132,7 +138,8 @@ def main():
                 return
             sender = TelegramSender(token, chat) if token else None
             worker = Worker(store, sender)
-            commands = CommandWorker(store, sender, command_handler=runner.command) if sender else None
+            commands = CommandWorker(store, sender, command_handler=runner.command,
+                                     allowed_chat_ids=args.allow_chat, public=args.public_bot) if sender else None
             threads = [threading.Thread(target=worker.run, daemon=True)]
             if commands:
                 threads.append(threading.Thread(target=commands.run, daemon=True))
