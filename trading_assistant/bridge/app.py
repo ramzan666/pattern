@@ -41,8 +41,10 @@ def validate(data, now_ms):
         raise InvalidEvent("Invalid event identity")
     if type(data.get("schema_version")) is not int or data["schema_version"] != 1:
         raise InvalidEvent("Unsupported schema")
-    if data.get("strategy") != "trend_retest_v1" or data.get("timeframe") != "60":
+    if data.get("strategy") != "trend_retest_v1" or data.get("timeframe") not in ("60", "15"):
         raise InvalidEvent("Unsupported strategy/timeframe")
+    if "trend_timeframe" in data and data["trend_timeframe"] not in ("60", "240"):
+        raise InvalidEvent("Unsupported trend timeframe")
     if not isinstance(data.get("event"), str) or data["event"] not in EVENTS or data.get("direction") not in ("long", "short", "none"):
         raise InvalidEvent("Invalid event/direction")
     if data.get("stage") not in STAGES:
@@ -85,15 +87,18 @@ def validate(data, now_ms):
             raise InvalidEvent("Invalid price order")
     allowed = {"schema_version", "strategy", "event_id", "setup_id", "sequence", "event", "stage",
                "symbol", "timeframe", "direction", "trend", "event_time", "bar_time", "entry",
-               "stop", "target", "rr", "risk_pct", "expires_at", "reason", "secret"}
+               "stop", "target", "rr", "risk_pct", "expires_at", "reason", "secret", "trend_timeframe"}
     if data.keys() - allowed:
         raise InvalidEvent("Unexpected fields")
     return {key: value for key, value in data.items() if key != "secret"}
 
 
 class Store:
-    def __init__(self, path, max_age=300, send_context=False, send_breakout=False, state_max_age=5400):
+    def __init__(self, path, max_age=300, send_context=False, send_breakout=False, state_max_age=5400, source="tradingview"):
         self.lock = threading.RLock()
+        if source not in ("tradingview", "exchange"):
+            raise ValueError("Invalid state source")
+        self.source = source
         self.max_age = max_age
         self.state_max_age = state_max_age
         self.quiet = ({"context"} if not send_context else set()) | ({"breakout"} if not send_breakout else set())
@@ -118,6 +123,10 @@ class Store:
     @contextmanager
     def transaction(self):
         with self.lock:
+            if self.db.in_transaction:
+                # A surrounding autonomous checkpoint transaction owns the commit.
+                yield
+                return
             self.db.execute("BEGIN IMMEDIATE")
             try:
                 yield
@@ -197,7 +206,7 @@ class Store:
             if not row:
                 return None
             data = json.loads(row["data"])
-            latest = self.state(data["symbol"])
+            latest = self.state(data["symbol"]) or data
             expired = data["event"] in ("setup", "trigger") and data["expires_at"] is not None and now * 1000 >= data["expires_at"]
             late = data["event"] not in ("cancel", "exit") and now * 1000 - data["event_time"] > self.max_age * 1000
             superseded = latest["event_id"] != data["event_id"] and (
@@ -218,14 +227,24 @@ class Store:
                             (status, next_at, reason, event_id))
 
 
+def timeframe_label(value):
+    return {"15": "15м", "60": "1H", "240": "4H"}[value]
+
+
 def render(data):
     titles = {"context": "Обновление тренда", "breakout": "Пробой — ждём ретест",
               "setup": "Вход подготовлен", "trigger": "Условие входа выполнено",
               "cancel": "Сценарий отменён", "exit": "Условие выхода выполнено"}
     trends = {"bullish": "бычий", "bearish": "медвежий", "neutral": "нейтральный"}
     direction = {"long": "LONG", "short": "SHORT", "none": "НАБЛЮДЕНИЕ"}[data["direction"]]
-    parts = [f"<b>{html.escape(data['symbol'])} · {direction}</b>",
-             titles[data["event"]], f"Тренд 4H: {trends[data['trend']]} · сигналы 1H"]
+    # Keep original Pine payloads compatible; Python includes its selected trend TF.
+    trend_tf = timeframe_label(data.get("trend_timeframe", "240"))
+    signal_tf = timeframe_label(data["timeframe"])
+    parts = [
+        f"<b>{html.escape(data['symbol'])} · {direction}</b>",
+        titles[data["event"]],
+        f"Тренд {trend_tf}: {trends[data['trend']]} · сигналы {signal_tf}",
+    ]
     if data["entry"] is not None:
         number = lambda value: format(value, ".10g") if value is not None else "—"
         parts.extend([f"Вход: <b>{number(data['entry'])}</b>",
@@ -237,7 +256,7 @@ def render(data):
         parts.append("Сигнал стратегии; фактическое исполнение на бирже не подтверждено.")
     if data["reason"]:
         parts.append(html.escape(data["reason"]))
-    parts.append(f'<a href="https://www.tradingview.com/chart/?symbol={parse.quote(data["symbol"], safe="")}&amp;interval=60">Открыть график</a>')
+    parts.append(f'<a href="https://www.tradingview.com/chart/?symbol={parse.quote(data["symbol"], safe="")}&amp;interval={data["timeframe"]}">Открыть график</a>')
     return "\n".join(parts)
 
 

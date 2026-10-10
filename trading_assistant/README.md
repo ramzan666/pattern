@@ -3,7 +3,12 @@
 Основной код: [trend_retest.pine](trend_retest.pine).
 Для вставки в редактор: [trend_retest.txt](trend_retest.txt).
 
-Если бота и сервера пока нет, начните с [пошаговой инструкции с нуля](START_HERE.md).
+Для самостоятельных сигналов **Bybit Spot LONG без TradingView и домена**
+начните с [инструкции автономного бота](autonomous/README.md).
+В нём доступны режимы 1H/4H и 15м/1H. Pine-версия ниже работает на 1H/4H.
+
+Если нужен именно вариант TradingView → Telegram, начните с
+[пошаговой инструкции с нуля](START_HERE.md).
 
 ## Запуск в TradingView
 
