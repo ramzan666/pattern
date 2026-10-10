@@ -75,6 +75,18 @@ class CommandTests(unittest.TestCase):
             sender.send("Сигнал")
             self.assertNotIn("reply_markup", call.call_args.args[1])
 
+    def test_market_overview_explains_filter_and_flags_stale_data(self):
+        self.store.source = "exchange"
+        self.store.ingest(event(event_id="python|btc", event="context", stage="idle",
+                                entry=None, stop=None, target=None, rr=None, risk_pct=0,
+                                expires_at=None, trend="bearish"), NOW)
+        overview = reply(self.store, "🌍 Обзор рынка", NOW)
+        self.assertIn("фильтр стратегии не разрешает LONG", overview)
+        self.assertIn("новости и другие монеты не учитываются", overview)
+        stale = reply(self.store, "/market", NOW + 5401000)
+        self.assertIn("Данные устарели", stale)
+        self.assertNotIn("Сейчас фильтр", stale)
+
     def test_latest_btc_and_status_come_only_from_stored_states(self):
         self.store.ingest(event(symbol="BYBIT:BTCUSDT.P", event_id="old", event_time=NOW - 1000), NOW)
         self.store.ingest(event(event_id="current", entry=200, stop=199, target=202), NOW)

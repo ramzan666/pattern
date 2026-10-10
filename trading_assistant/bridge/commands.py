@@ -15,7 +15,8 @@ STAGES = {"idle": "Ждём пробой 1H", "waiting_retest": "Ждём рет
 TRENDS = {"bullish": "бычий", "bearish": "медвежий", "neutral": "нейтральный"}
 MSK = ZoneInfo("Europe/Moscow")
 BUTTON_COMMANDS = {"₿ BTC": "/btc", "Ξ ETH": "/eth", "📊 Статус": "/status",
-                   "⏱ 15м": "/tf15", "⏱ 1H": "/tf1h", "❓ Помощь": "/help"}
+                   "⏱ 15м": "/tf15", "⏱ 1H": "/tf1h", "❓ Помощь": "/help",
+                   "🌍 Обзор рынка": "/market"}
 
 
 def normalize_command(message):
@@ -27,6 +28,7 @@ def menu_keyboard(store):
     rows = [["₿ BTC", "Ξ ETH"], ["📊 Статус", "❓ Помощь"]]
     if store.source == "exchange":
         rows.insert(1, ["⏱ 15м", "⏱ 1H"])
+        rows.insert(2, ["🌍 Обзор рынка"])
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True,
             "one_time_keyboard": False, "input_field_placeholder": "Выберите действие"}
 
@@ -71,9 +73,25 @@ def describe(data, now_ms, max_age, compact=False):
 def reply(store, message, now_ms):
     message = normalize_command(message)
     command = message.strip().split(maxsplit=1)[0].lower().split("@")[0] if message.strip() else ""
-    help_text = HELP + ("\n/tf15 — сигналы 15м, тренд 1H; /tf1h — сигналы 1H, тренд 4H." if store.source == "exchange" else "")
+    help_text = HELP + ("\n/market — обзор наблюдаемых пар.\n/tf15 — сигналы 15м, тренд 1H; /tf1h — сигналы 1H, тренд 4H." if store.source == "exchange" else "")
     if command in ("/start", "/menu"):
         return "Меню бота: выберите кнопку под полем сообщения.\n" + help_text
+    if command == "/market" and store.source == "exchange":
+        states = store.states()
+        if not states:
+            return "Пока нет свечей Bybit для обзора рынка."
+        blocks = ["<b>Обзор рынка · Bybit</b>",
+                  "По наблюдаемым парам; новости и другие монеты не учитываются."]
+        for data in states[:10]:
+            block = describe(data, now_ms, store.state_max_age)
+            _, stale = snapshot_freshness(data, now_ms, store.state_max_age)
+            if not stale and data["stage"] == "idle":
+                block += ("\nБычий фильтр выполнен. Для входа ещё нужны пробой и ретест." if data["trend"] == "bullish" else
+                          "\nСейчас фильтр стратегии не разрешает LONG; ждём изменения условий.")
+            if len("\n\n".join(blocks + [block])) > 3500:
+                break
+            blocks.append(block)
+        return "\n\n".join(blocks)
     if command not in ("/btc", "/eth", "/status"):
         return help_text
     states = store.states()
