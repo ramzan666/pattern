@@ -1,0 +1,5 @@
+# Replace this with your own domain pointed at the server running the bridge.
+# Caddy obtains and renews the HTTPS certificate for a valid public domain.
+signals.example.com {
+    reverse_proxy 127.0.0.1:8080
+}

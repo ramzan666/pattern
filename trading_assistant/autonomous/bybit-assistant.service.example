@@ -1,0 +1,27 @@
+[Unit]
+Description=Bybit Spot virtual trading assistant
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=bybit-assistant
+Group=bybit-assistant
+WorkingDirectory=/opt/bybit-assistant
+EnvironmentFile=/etc/bybit-assistant.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m trading_assistant.autonomous --market spot --direction long --symbols BTCUSDT ETHUSDT --database /var/lib/bybit-assistant/state.sqlite3
+StateDirectory=bybit-assistant
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=40
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

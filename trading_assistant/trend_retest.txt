@@ -1,0 +1,395 @@
+//@version=6
+strategy("Crypto Trend Retest · 4H → 1H", overlay = true, initial_capital = 10000, currency = currency.USD, pyramiding = 0, commission_type = strategy.commission.percent, commission_value = 0.05, slippage = 2, margin_long = 100, margin_short = 100, calc_on_every_tick = true, calc_on_order_fills = false, process_orders_on_close = false, use_bar_magnifier = false, max_bars_back = 300, max_lines_count = 300, max_labels_count = 300, max_boxes_count = 150)
+
+string allowedSide = input.string("Оба", "Направления", options = ["Оба", "Только LONG", "Только SHORT"], group = "Стратегия")
+int fastLength = input.int(50, "EMA тренда 4H", minval = 2, maxval = 100, group = "Стратегия")
+int slowLength = input.int(200, "Медленная EMA 4H", minval = 101, maxval = 250, group = "Стратегия")
+int breakoutLength = input.int(20, "Диапазон пробоя: предыдущих свечей 1H", minval = 5, maxval = 100, group = "Стратегия")
+int retestBars = input.int(5, "Ожидать ретест: свечей 1H", minval = 1, maxval = 24, group = "Стратегия")
+int activationBars = input.int(2, "После ретеста ожидать вход: свечей 1H", minval = 1, maxval = 12, group = "Стратегия")
+float rewardRisk = input.float(2.0, "Плановое отношение прибыль / риск", minval = 1.0, maxval = 5.0, step = 0.25, group = "Стратегия")
+float stopBuffer = input.float(0.25, "Запас SL за ретестом: ATR 1H", minval = 0.0, maxval = 2.0, step = 0.05, group = "Стратегия")
+bool useObstacles = input.bool(true, "Пропускать цель за ближайшим свингом 4H", group = "Стратегия")
+int obstacleStrength = input.int(3, "Свинг препятствия 4H: свечей слева / справа", minval = 1, maxval = 10, group = "Стратегия")
+float riskPercent = input.float(0.5, "Плановый риск капитала: % до издержек", minval = 0.05, maxval = 2.0, step = 0.05, group = "Размер позиции")
+float exposurePercent = input.float(100.0, "Лимит стоимости позиции: % капитала", minval = 1.0, maxval = 100.0, step = 5.0, group = "Размер позиции")
+int keepPlans = input.int(20, "Хранить сетапов и пробоев", minval = 1, maxval = 50, group = "Отображение")
+int drawingBars = input.int(10, "Начальная ширина зон: свечей", minval = 2, maxval = 48, group = "Отображение")
+bool showTrendLines = input.bool(false, "Показывать EMA 4H", group = "Отображение")
+bool enableAlerts = input.bool(true, "Включить события уведомлений", group = "Уведомления")
+string deliveryMode = input.string("TradingView", "Формат уведомлений", options = ["TradingView", "Webhook / Telegram"], group = "Уведомления")
+string webhookSecret = input.string("", "Webhook-секрет (не токен Telegram)", group = "Уведомления")
+string configId = str.tostring(fastLength) + "-" + str.tostring(slowLength) + "-" + str.tostring(breakoutLength) + "-" + str.tostring(retestBars) + "-" + str.tostring(activationBars) + "-" + str.tostring(rewardRisk) + "-" + str.tostring(stopBuffer) + "-" + str.tostring(useObstacles) + "-" + str.tostring(obstacleStrength) + "-" + str.tostring(riskPercent) + "-" + str.tostring(exposurePercent) + "-" + allowedSide
+
+if barstate.isfirst
+    if timeframe.in_seconds() != 3600 or not chart.is_standard
+        runtime.error("Откройте стандартные свечи на графике 1H. Тренд берётся с закрытых свечей 4H.")
+    if deliveryMode == "Webhook / Telegram" and str.length(webhookSecret) < 24
+        runtime.error("Для webhook задайте отдельный секрет длиной не менее 24 символов и такой же WEBHOOK_SECRET на сервере.")
+
+color buyColor = color.rgb(0, 150, 100)
+color sellColor = color.rgb(215, 55, 65)
+color entryColor = color.rgb(40, 110, 220)
+
+type PlanDrawing
+    box reward
+    box risk
+    line entryLine
+    line stopLine
+    line targetLine
+    label entryTag
+    label stopTag
+    label targetTag
+    string setupId
+    int createdTime
+
+f_deleteDrawing(PlanDrawing drawing) =>
+    box.delete(drawing.reward)
+    box.delete(drawing.risk)
+    line.delete(drawing.entryLine)
+    line.delete(drawing.stopLine)
+    line.delete(drawing.targetLine)
+    label.delete(drawing.entryTag)
+    label.delete(drawing.stopTag)
+    label.delete(drawing.targetTag)
+
+f_drawPlan(string id, int side, float entry, float stop, float target, float plannedRisk) =>
+    int startTime = time_close
+    int endTime = startTime + drawingBars * 3600000
+    box rewardBox = box.new(left = startTime, top = math.max(entry, target), right = endTime, bottom = math.min(entry, target), xloc = xloc.bar_time, border_color = color.new(buyColor, 40), bgcolor = color.new(buyColor, 92))
+    box riskBox = box.new(left = startTime, top = math.max(entry, stop), right = endTime, bottom = math.min(entry, stop), xloc = xloc.bar_time, border_color = color.new(sellColor, 40), bgcolor = color.new(sellColor, 92))
+    line entryLine = line.new(startTime, entry, endTime, entry, xloc = xloc.bar_time, color = entryColor, width = 2)
+    line stopLine = line.new(startTime, stop, endTime, stop, xloc = xloc.bar_time, color = sellColor, style = line.style_dashed)
+    line targetLine = line.new(startTime, target, endTime, target, xloc = xloc.bar_time, color = buyColor, style = line.style_dashed)
+    label entryTag = label.new(endTime, entry, (side == 1 ? "LONG" : "SHORT") + " · ОЖИДАНИЕ\n" + str.tostring(entry, format.mintick), xloc = xloc.bar_time, style = label.style_label_left, color = entryColor, textcolor = color.white, size = size.small)
+    label stopTag = label.new(endTime, stop, "SL\n" + str.tostring(stop, format.mintick), xloc = xloc.bar_time, style = label.style_label_left, color = sellColor, textcolor = color.white, size = size.small)
+    label targetTag = label.new(endTime, target, "TP · " + str.tostring(rewardRisk, "#.##") + "R\n" + str.tostring(target, format.mintick), xloc = xloc.bar_time, style = label.style_label_left, color = buyColor, textcolor = color.white, size = size.small)
+    label.set_tooltip(entryTag, "Вход — стоп-ордер в модели TradingView со следующей свечи. Плановый риск до издержек: " + str.tostring(plannedRisk, "#.###") + "%. Из-за лимита стоимости риск может быть меньше настройки.")
+    PlanDrawing.new(rewardBox, riskBox, entryLine, stopLine, targetLine, entryTag, stopTag, targetTag, id, startTime)
+
+f_markDrawing(PlanDrawing drawing, int phase, int side, float entry, int endedTime) =>
+    string status = phase == 2 ? "ОЖИДАНИЕ" : phase == 3 ? "АКТИВЕН В МОДЕЛИ" : phase == 4 ? "ОТМЕНЁН" : "ЗАКРЫТ В МОДЕЛИ"
+    label.set_text(drawing.entryTag, (side == 1 ? "LONG" : "SHORT") + " · " + status + "\n" + str.tostring(entry, format.mintick))
+    label.set_color(drawing.entryTag, phase == 4 ? color.gray : entryColor)
+    box.set_bgcolor(drawing.reward, color.new(buyColor, phase == 3 ? 84 : phase == 4 ? 97 : 92))
+    box.set_bgcolor(drawing.risk, color.new(sellColor, phase == 3 ? 86 : phase == 4 ? 97 : 92))
+    if phase >= 2
+        int endTime = phase == 4 or phase == 5 ? math.max(endedTime, drawing.createdTime + 3600000) : math.max(drawing.createdTime + drawingBars * 3600000, time_close + 3600000)
+        box.set_right(drawing.reward, endTime)
+        box.set_right(drawing.risk, endTime)
+        line.set_x2(drawing.entryLine, endTime)
+        line.set_x2(drawing.stopLine, endTime)
+        line.set_x2(drawing.targetLine, endTime)
+        label.set_x(drawing.entryTag, endTime)
+        label.set_x(drawing.stopTag, endTime)
+        label.set_x(drawing.targetTag, endTime)
+
+// Сначала предыдущая, затем текущая 4H-свеча. Незакрытую снаружи не принимаем.
+f_fourHourPacket() =>
+    float fast = ta.ema(close, fastLength)
+    float slow = ta.ema(close, slowLength)
+    float ph = ta.pivothigh(high, obstacleStrength, obstacleStrength)
+    float pl = ta.pivotlow(low, obstacleStrength, obstacleStrength)
+    [time_close[1], close[1], fast[1], slow[1], fast[2], ph[1], pl[1], bar_index[1], time_close, close, fast, slow, fast[1], ph, pl, bar_index]
+
+f_jsonText(string value) =>
+    string escaped = str.replace_all(value, "\\", "\\\\")
+    escaped := str.replace_all(escaped, "\"", "\\\"")
+    escaped := str.replace_all(escaped, "\n", "\\n")
+    escaped := str.replace_all(escaped, "\r", "\\r")
+    escaped := str.replace_all(escaped, "\t", "\\t")
+    "\"" + escaped + "\""
+
+f_number(float value) =>
+    na(value) ? "null" : str.tostring(value, "#.##########")
+
+f_integer(int value) =>
+    na(value) ? "null" : str.tostring(value)
+
+f_stage(int phase) =>
+    phase == 1 ? "waiting_retest" : phase == 2 ? "armed" : phase == 3 ? "active" : phase == 4 ? "canceled" : phase == 5 ? "closed" : "idle"
+
+f_trend(int trend) =>
+    trend == 1 ? "bullish" : trend == -1 ? "bearish" : "neutral"
+
+f_emit(string kind, string id, int sequence, int phase, int side, int trend, float entry, float stop, float target, float plannedRisk, int expiresAt, string reason, int contextTime) =>
+    int nextSequence = sequence + 1
+    if enableAlerts and barstate.isrealtime
+        string eventId = kind == "context" ? syminfo.tickerid + "|" + configId + "|context|" + str.tostring(time_close) + (barstate.isconfirmed ? "|close" : "|bootstrap|" + str.tostring(timenow)) : id + "|" + kind
+        string direction = side == 1 ? "long" : side == -1 ? "short" : "none"
+        string eventTitle = kind == "setup" ? "Сценарий готов" : kind == "trigger" ? "Условие входа выполнено в модели" : kind == "cancel" ? "Сценарий отменён" : kind == "exit" ? "Сценарий завершён в модели" : kind == "breakout" ? "Пробой подтверждён, ждём ретест" : "Обновление тренда 4H"
+        string alertMessage = syminfo.tickerid + " · " + eventTitle + "\nТренд: " + (trend == 1 ? "бычий" : trend == -1 ? "медвежий" : "нейтральный") + "\n" + reason
+        if not na(entry)
+            alertMessage := alertMessage + "\n" + str.upper(direction) + " · Вход " + str.tostring(entry, format.mintick) + " · SL " + str.tostring(stop, format.mintick) + " · TP " + str.tostring(target, format.mintick) + " · " + str.tostring(rewardRisk, "#.##") + "R"
+        string payload = "{\"schema_version\":1,\"strategy\":\"trend_retest_v1\",\"secret\":" + f_jsonText(webhookSecret) + ",\"event_id\":" + f_jsonText(eventId) + ",\"setup_id\":" + f_jsonText(id) + ",\"sequence\":" + str.tostring(nextSequence) + ",\"event\":" + f_jsonText(kind) + ",\"stage\":" + f_jsonText(f_stage(phase)) + ",\"symbol\":" + f_jsonText(syminfo.tickerid) + ",\"timeframe\":\"60\",\"direction\":" + f_jsonText(direction) + ",\"trend\":" + f_jsonText(f_trend(trend)) + ",\"event_time\":" + str.tostring(timenow) + ",\"bar_time\":" + str.tostring(time) + ",\"entry\":" + f_number(entry) + ",\"stop\":" + f_number(stop) + ",\"target\":" + f_number(target) + ",\"rr\":" + f_number(na(entry) ? na : rewardRisk) + ",\"risk_pct\":" + f_number(plannedRisk) + ",\"expires_at\":" + f_integer(expiresAt) + ",\"reason\":" + f_jsonText(reason) + "}"
+        alert(deliveryMode == "TradingView" ? alertMessage : payload, alert.freq_all)
+    nextSequence
+
+// Линейный USD/USDT-инструмент; стоимость ограничена доступным капиталом.
+f_quantity(float entry, float stop, float equity) =>
+    float pointValue = syminfo.pointvalue
+    float step = syminfo.mincontract
+    float risk = math.abs(entry - stop)
+    float quantity = 0.0
+    if equity > 0 and entry > 0 and risk > 0 and pointValue > 0 and step > 0
+        float riskQuantity = equity * riskPercent / 100.0 / (risk * pointValue)
+        float exposureQuantity = equity * exposurePercent / 100.0 * 0.99 / (entry * pointValue)
+        quantity := math.floor(math.min(riskQuantity, exposureQuantity) / step) * step
+    float plannedRisk = equity > 0 ? quantity * risk * pointValue / equity * 100.0 : 0.0
+    [quantity, plannedRisk]
+
+f_obstacle(array<float> levels, int side, float entry, float target) =>
+    bool blocked = false
+    if useObstacles and array.size(levels) > 0
+        for i = 0 to array.size(levels) - 1
+            float level = array.get(levels, i)
+            blocked := blocked or (side == 1 ? level > entry and level < target : level < entry and level > target)
+    blocked
+
+[prevFourEnd, prevFourClose, prevFast, prevSlow, prevFastBefore, prevPh, prevPl, prevFourIndex, fourEnd, fourClose, fourFast, fourSlow, fourFastBefore, fourPh, fourPl, fourIndex] = request.security(syminfo.tickerid, "240", f_fourHourPacket(), lookahead = barmerge.lookahead_off)
+float upperRange = ta.highest(high[1], breakoutLength)
+float lowerRange = ta.lowest(low[1], breakoutLength)
+float atr = ta.atr(14)
+var int contextTime = na
+var int trend = 0
+var float confirmedFast = na
+var float confirmedSlow = na
+var array<float> resistance = array.new<float>()
+var array<float> support = array.new<float>()
+var array<PlanDrawing> drawings = array.new<PlanDrawing>()
+var array<line> breakoutLines = array.new<line>()
+var array<label> breakoutTags = array.new<label>()
+var PlanDrawing latestDrawing = na
+var label latestBreakTag = na
+
+// varip сохраняет состояния и запрет повторных событий между live-тиками.
+varip int phase = 0
+varip int side = 0
+varip string setupId = ""
+varip int breakoutBar = na
+varip float breakoutLevel = na
+varip int retestBar = na
+varip int activationEndBar = na
+varip int expiresAt = na
+varip float planEntry = na
+varip float planStop = na
+varip float planTarget = na
+varip float planQuantity = na
+varip float planRisk = 0.0
+varip bool triggerSent = false
+varip int seenClosedTrades = 0
+varip int eventSequence = 0
+varip int lastProcessedBar = na
+varip int lastEndedBar = -1
+varip int lastEndedTime = na
+varip bool bootstrapped = false
+varip string statusReason = "Ждём закрытые данные 4H и часовой пробой"
+bool trendChanged = false
+bool contextSent = false
+
+if barstate.isconfirmed and (na(lastProcessedBar) or lastProcessedBar != bar_index)
+    int oldTrend = trend
+    for sourceOffset = 0 to 1
+        int sourceEnd = sourceOffset == 0 ? prevFourEnd : fourEnd
+        float sourceClose = sourceOffset == 0 ? prevFourClose : fourClose
+        float sourceFast = sourceOffset == 0 ? prevFast : fourFast
+        float sourceSlow = sourceOffset == 0 ? prevSlow : fourSlow
+        float sourceFastBefore = sourceOffset == 0 ? prevFastBefore : fourFastBefore
+        float sourceHigh = sourceOffset == 0 ? prevPh : fourPh
+        float sourceLow = sourceOffset == 0 ? prevPl : fourPl
+        int sourceIndex = sourceOffset == 0 ? prevFourIndex : fourIndex
+        if not na(sourceEnd) and sourceEnd <= time_close and (na(contextTime) or sourceEnd > contextTime)
+            contextTime := sourceEnd
+            confirmedFast := sourceFast
+            confirmedSlow := sourceSlow
+            bool ready = sourceIndex >= slowLength - 1 and not na(sourceSlow) and not na(sourceFastBefore)
+            trend := ready and sourceFast > sourceSlow and sourceFast > sourceFastBefore and sourceClose > sourceFast ? 1 : ready and sourceFast < sourceSlow and sourceFast < sourceFastBefore and sourceClose < sourceFast ? -1 : 0
+            if not na(sourceHigh)
+                array.push(resistance, sourceHigh)
+                if array.size(resistance) > 100
+                    array.shift(resistance)
+            if not na(sourceLow)
+                array.push(support, sourceLow)
+                if array.size(support) > 100
+                    array.shift(support)
+    trendChanged := oldTrend != trend
+    int highIndex = array.size(resistance) - 1
+    while highIndex >= 0
+        if high >= array.get(resistance, highIndex)
+            array.remove(resistance, highIndex)
+        highIndex := highIndex - 1
+    int lowIndex = array.size(support) - 1
+    while lowIndex >= 0
+        if low <= array.get(support, lowIndex)
+            array.remove(support, lowIndex)
+        lowIndex := lowIndex - 1
+
+// Нативный эмулятор может войти и выйти внутри одной свечи: сначала проверяем закрытые сделки.
+if strategy.closedtrades > seenClosedTrades
+    if not triggerSent and (phase == 2 or phase == 3)
+        phase := 3
+        expiresAt := na
+        triggerSent := true
+        eventSequence := f_emit("trigger", setupId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, "Вход зарегистрирован в эмуляторе TradingView; это не исполнение заявки на вашей бирже", contextTime)
+    phase := 5
+    expiresAt := na
+    statusReason := "Модель TradingView: " + strategy.closedtrades.exit_comment(strategy.closedtrades - 1)
+    eventSequence := f_emit("exit", setupId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, statusReason, contextTime)
+    seenClosedTrades := strategy.closedtrades
+    lastEndedBar := bar_index
+    lastEndedTime := time_close
+else if phase == 2 and strategy.position_size != 0
+    phase := 3
+    expiresAt := na
+    triggerSent := true
+    statusReason := "Вход зарегистрирован в модели; уровни SL и TP зафиксированы"
+    eventSequence := f_emit("trigger", setupId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, statusReason, contextTime)
+
+// Нарушение SL до исполнения входа отменяет ещё ожидающий ордер.
+if barstate.isconfirmed and phase == 2 and bar_index > retestBar and (side == 1 ? low <= planStop : high >= planStop)
+    strategy.cancel("Entry")
+    strategy.cancel("Exit")
+    phase := 4
+    expiresAt := na
+    lastEndedBar := bar_index
+    lastEndedTime := time_close
+    statusReason := "До активации нарушен SL"
+    eventSequence := f_emit("cancel", setupId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, statusReason, contextTime)
+
+if not na(latestDrawing) and latestDrawing.setupId == setupId and phase >= 2
+    f_markDrawing(latestDrawing, phase, side, planEntry, lastEndedTime)
+
+if barstate.isconfirmed and (na(lastProcessedBar) or lastProcessedBar != bar_index)
+    lastProcessedBar := bar_index
+    if (phase == 1 or phase == 2) and trend != side
+        strategy.cancel("Entry")
+        strategy.cancel("Exit")
+        phase := 4
+        expiresAt := na
+        lastEndedBar := bar_index
+        lastEndedTime := time_close
+        statusReason := "Закрытый тренд 4H больше не подтверждает направление"
+        eventSequence := f_emit("cancel", setupId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, statusReason, contextTime)
+
+    if phase == 1 and bar_index > breakoutBar
+        int age = bar_index - breakoutBar
+        bool retested = side == 1 ? low <= breakoutLevel and close > breakoutLevel : high >= breakoutLevel and close < breakoutLevel
+        if age <= retestBars and retested and not na(atr) and atr > 0
+            float entry = side == 1 ? math.ceil(high / syminfo.mintick) * syminfo.mintick + syminfo.mintick : math.floor(low / syminfo.mintick) * syminfo.mintick - syminfo.mintick
+            float stop = side == 1 ? math.floor((low - atr * stopBuffer) / syminfo.mintick) * syminfo.mintick : math.ceil((high + atr * stopBuffer) / syminfo.mintick) * syminfo.mintick
+            float risk = math.abs(entry - stop)
+            float target = side == 1 ? math.ceil((entry + risk * rewardRisk) / syminfo.mintick) * syminfo.mintick : math.floor((entry - risk * rewardRisk) / syminfo.mintick) * syminfo.mintick
+            [quantity, plannedRisk] = f_quantity(entry, stop, strategy.equity)
+            bool obstacle = f_obstacle(side == 1 ? resistance : support, side, entry, target)
+            bool valid = entry > 0 and stop > 0 and target > 0 and risk >= syminfo.mintick and quantity >= syminfo.mincontract and not obstacle
+            if valid
+                phase := 2
+                planEntry := entry
+                planStop := stop
+                planTarget := target
+                planQuantity := quantity
+                planRisk := plannedRisk
+                retestBar := bar_index
+                activationEndBar := bar_index + activationBars
+                expiresAt := time_close + activationBars * 3600000
+                statusReason := "Ретест подтверждён. Активация со следующей свечи, в течение " + str.tostring(activationBars) + " свечей 1H"
+                strategy.entry("Entry", side == 1 ? strategy.long : strategy.short, qty = planQuantity, stop = planEntry, comment = side == 1 ? "LONG" : "SHORT", disable_alert = true)
+                strategy.exit("Exit", from_entry = "Entry", stop = planStop, limit = planTarget, comment_profit = "TP", comment_loss = "SL", disable_alert = true)
+                while array.size(drawings) >= keepPlans
+                    f_deleteDrawing(array.shift(drawings))
+                latestDrawing := f_drawPlan(setupId, side, entry, stop, target, plannedRisk)
+                array.push(drawings, latestDrawing)
+                eventSequence := f_emit("setup", setupId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, statusReason, contextTime)
+            else
+                phase := 4
+                expiresAt := na
+                lastEndedBar := bar_index
+                lastEndedTime := time_close
+                statusReason := obstacle ? "Подтверждённый свинг 4H находится до планового TP" : "Некорректные уровни или размер позиции меньше минимального"
+                eventSequence := f_emit("cancel", setupId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, statusReason, contextTime)
+        else if age >= retestBars
+            phase := 4
+            expiresAt := na
+            lastEndedBar := bar_index
+            lastEndedTime := time_close
+            statusReason := "Ретест не подтвердился за " + str.tostring(retestBars) + " свечей"
+            eventSequence := f_emit("cancel", setupId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, statusReason, contextTime)
+
+    // Последняя разрешённая свеча уже отработала; непопавший ордер отменяем на её закрытии.
+    if phase == 2 and bar_index >= activationEndBar
+        strategy.cancel("Entry")
+        strategy.cancel("Exit")
+        phase := 4
+        expiresAt := na
+        lastEndedBar := bar_index
+        lastEndedTime := time_close
+        statusReason := "Цена не активировала вход за " + str.tostring(activationBars) + " свечей после ретеста"
+        eventSequence := f_emit("cancel", setupId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, statusReason, contextTime)
+
+    bool allowedLong = allowedSide != "Только SHORT"
+    bool allowedShort = allowedSide != "Только LONG"
+    bool brokeUp = trend == 1 and allowedLong and close > upperRange
+    bool brokeDown = trend == -1 and allowedShort and close < lowerRange
+    if (phase == 0 or phase == 4 or phase == 5) and strategy.position_size == 0 and bar_index > lastEndedBar and bar_index >= breakoutLength and (brokeUp or brokeDown)
+        phase := 1
+        side := brokeUp ? 1 : -1
+        setupId := syminfo.tickerid + "|" + configId + "|" + str.tostring(time_close)
+        breakoutBar := bar_index
+        breakoutLevel := side == 1 ? upperRange : lowerRange
+        planEntry := na
+        planStop := na
+        planTarget := na
+        planQuantity := na
+        planRisk := 0.0
+        triggerSent := false
+        expiresAt := time_close + retestBars * 3600000
+        statusReason := "Часовой пробой подтверждён. Ждём касание уровня и закрытие за ним в следующие " + str.tostring(retestBars) + " свечей"
+        if array.size(breakoutLines) >= keepPlans
+            line.delete(array.shift(breakoutLines))
+            label.delete(array.shift(breakoutTags))
+        line levelLine = line.new(time_close, breakoutLevel, expiresAt, breakoutLevel, xloc = xloc.bar_time, color = side == 1 ? buyColor : sellColor, style = line.style_dashed, width = 2)
+        latestBreakTag := label.new(time_close, breakoutLevel, side == 1 ? "ПРОБОЙ ↑ · РЕТЕСТ?" : "ПРОБОЙ ↓ · РЕТЕСТ?", xloc = xloc.bar_time, style = side == 1 ? label.style_label_down : label.style_label_up, color = side == 1 ? buyColor : sellColor, textcolor = color.white, size = size.small)
+        array.push(breakoutLines, levelLine)
+        array.push(breakoutTags, latestBreakTag)
+        eventSequence := f_emit("breakout", setupId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, statusReason, contextTime)
+
+    // Тихий часовой снимок нужен ассистенту даже при неизменном тренде.
+    string contextId = setupId == "" ? syminfo.tickerid + "|context|" + str.tostring(time_close) : setupId
+    eventSequence := f_emit("context", contextId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, (trendChanged ? "Закрытый тренд 4H обновлён. " : "Текущий сценарий. ") + statusReason, contextTime)
+    contextSent := true
+
+// После запуска live-алерта бот сразу получает состояние, не ожидая нового пробоя.
+if barstate.isrealtime and not bootstrapped
+    bootstrapped := true
+    if not contextSent
+        string bootstrapId = setupId == "" ? syminfo.tickerid + "|context|" + str.tostring(time_close) : setupId
+        eventSequence := f_emit("context", bootstrapId, eventSequence, phase, side, trend, planEntry, planStop, planTarget, planRisk, expiresAt, "Первый live-снимок. " + statusReason, contextTime)
+
+// Состояние подписи обновляется и после закрытого расчёта, и на live-тиках.
+if not na(latestDrawing) and latestDrawing.setupId == setupId and phase >= 2
+    f_markDrawing(latestDrawing, phase, side, planEntry, lastEndedTime)
+if not na(latestBreakTag)
+    label.set_tooltip(latestBreakTag, statusReason)
+    label.set_text(latestBreakTag, (side == 1 ? "ПРОБОЙ ↑" : "ПРОБОЙ ↓") + (phase == 1 ? " · РЕТЕСТ?" : phase == 4 ? " · ОТМЕНА" : " · РЕТЕСТ ✓"))
+
+plot(showTrendLines ? confirmedFast : na, title = "Закрытая EMA50 4H", color = color.orange)
+plot(showTrendLines ? confirmedSlow : na, title = "Закрытая EMA200 4H", color = color.gray)
+plot(phase == 2 or phase == 3 ? planEntry : na, title = "Entry", display = display.none)
+plot(phase == 2 or phase == 3 ? planStop : na, title = "SL", display = display.none)
+plot(phase == 2 or phase == 3 ? planTarget : na, title = "TP", display = display.none)
+
+var table dashboard = table.new(position.top_right, 2, 6, bgcolor = color.new(color.black, 15), border_width = 1)
+if barstate.islast
+    string stageText = phase == 1 ? "ЖДЁМ РЕТЕСТ" : phase == 2 ? "ЖДЁМ АКТИВАЦИЮ" : phase == 3 ? "АКТИВЕН В МОДЕЛИ" : phase == 4 ? "СЦЕНАРИЙ ОТМЕНЁН" : phase == 5 ? "СЦЕНАРИЙ ЗАВЕРШЁН" : "ЖДЁМ ПРОБОЙ"
+    table.cell(dashboard, 0, 0, "Тренд 4H", text_color = color.white)
+    table.cell(dashboard, 1, 0, trend == 1 ? "БЫЧИЙ" : trend == -1 ? "МЕДВЕЖИЙ" : "НЕЙТРАЛЬНЫЙ", text_color = trend == 1 ? buyColor : trend == -1 ? sellColor : color.silver)
+    table.cell(dashboard, 0, 1, "Состояние 1H", text_color = color.white)
+    table.cell(dashboard, 1, 1, stageText, text_color = color.white)
+    table.cell(dashboard, 0, 2, "Вход", text_color = color.white)
+    table.cell(dashboard, 1, 2, na(planEntry) ? "—" : str.tostring(planEntry, format.mintick), text_color = entryColor)
+    table.cell(dashboard, 0, 3, "SL / TP", text_color = color.white)
+    table.cell(dashboard, 1, 3, na(planEntry) ? "—" : str.tostring(planStop, format.mintick) + " / " + str.tostring(planTarget, format.mintick), text_color = color.white)
+    table.cell(dashboard, 0, 4, "Плановый риск", text_color = color.white)
+    table.cell(dashboard, 1, 4, str.tostring(planRisk, "#.###") + "% · " + str.tostring(rewardRisk, "#.##") + "R", text_color = color.white)
+    table.cell(dashboard, 0, 5, "Модель / счёт", text_color = color.white)
+    table.cell(dashboard, 1, 5, "TradingView / USD", text_color = color.silver)
