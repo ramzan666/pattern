@@ -270,9 +270,12 @@ class TelegramSender:
         self.url = "https://api.telegram.org/bot" + token + "/"
         self.chat_id = chat_id
 
-    def send(self, message):
-        self.call("sendMessage", {"chat_id": self.chat_id, "text": message, "parse_mode": "HTML",
-                                 "disable_web_page_preview": True})
+    def send(self, message, reply_markup=None):
+        payload = {"chat_id": self.chat_id, "text": message, "parse_mode": "HTML",
+                   "disable_web_page_preview": True}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        self.call("sendMessage", payload)
 
     def get_updates(self, offset):
         result = self.call("getUpdates", {"offset": offset, "timeout": 10, "limit": 10,

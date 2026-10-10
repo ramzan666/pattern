@@ -16,6 +16,11 @@ class CommandSender(FakeSender):
     def __init__(self, updates, errors=()):
         super().__init__(errors)
         self.updates, self.offsets = updates, []
+        self.markups = []
+
+    def send(self, message, reply_markup=None):
+        super().send(message)
+        self.markups.append(reply_markup)
 
     def get_updates(self, offset):
         self.offsets.append(offset)
@@ -44,6 +49,31 @@ class CommandTests(unittest.TestCase):
         self.assertIn("Пока нет снимков BTC", reply(self.store, "/btc", NOW))
         self.assertIn("Пока нет снимков TradingView", reply(self.store, "/status", NOW))
         self.assertIn("Команды:", reply(self.store, "что по BTC", NOW))
+
+    def test_menu_buttons_route_through_authorized_command_handler(self):
+        self.store.source = "exchange"
+        sender = CommandSender([update(1, "⏱ 15м", chat=999), update(2, "⏱ 15м"),
+                                update(3, "₿ BTC"), update(4, "/menu")])
+        seen = []
+        def handle(command):
+            seen.append(command)
+            return "Выбран 15м" if command == "/tf15" else None
+        CommandWorker(self.store, sender, command_handler=handle).poll_once(NOW)
+        self.assertEqual(seen, ["/tf15", "/btc", "/menu"])
+        self.assertEqual(sender.messages[0], "Выбран 15м")
+        self.assertIn("Пока нет данных BTC", sender.messages[1])
+        self.assertIn("Меню бота", sender.messages[2])
+        self.assertIn(["⏱ 15м", "⏱ 1H"], sender.markups[0]["keyboard"])
+        self.assertTrue(sender.markups[0]["is_persistent"])
+
+    def test_telegram_send_serializes_menu_and_preserves_plain_alerts(self):
+        sender = TelegramSender("fake-not-a-token", "123")
+        markup = {"keyboard": [["₿ BTC"]], "resize_keyboard": True}
+        with patch.object(sender, "call") as call:
+            sender.send("Меню", reply_markup=markup)
+            self.assertEqual(call.call_args.args[1]["reply_markup"], markup)
+            sender.send("Сигнал")
+            self.assertNotIn("reply_markup", call.call_args.args[1])
 
     def test_latest_btc_and_status_come_only_from_stored_states(self):
         self.store.ingest(event(symbol="BYBIT:BTCUSDT.P", event_id="old", event_time=NOW - 1000), NOW)

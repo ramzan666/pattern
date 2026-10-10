@@ -14,6 +14,21 @@ STAGES = {"idle": "Ждём пробой 1H", "waiting_retest": "Ждём рет
           "canceled": "Сценарий отменён", "closed": "Сценарий завершён в модели TradingView"}
 TRENDS = {"bullish": "бычий", "bearish": "медвежий", "neutral": "нейтральный"}
 MSK = ZoneInfo("Europe/Moscow")
+BUTTON_COMMANDS = {"₿ BTC": "/btc", "Ξ ETH": "/eth", "📊 Статус": "/status",
+                   "⏱ 15м": "/tf15", "⏱ 1H": "/tf1h", "❓ Помощь": "/help"}
+
+
+def normalize_command(message):
+    text = message.strip()
+    return BUTTON_COMMANDS.get(text, text)
+
+
+def menu_keyboard(store):
+    rows = [["₿ BTC", "Ξ ETH"], ["📊 Статус", "❓ Помощь"]]
+    if store.source == "exchange":
+        rows.insert(1, ["⏱ 15м", "⏱ 1H"])
+    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True,
+            "one_time_keyboard": False, "input_field_placeholder": "Выберите действие"}
 
 
 def date_text(milliseconds):
@@ -54,8 +69,11 @@ def describe(data, now_ms, max_age, compact=False):
 
 
 def reply(store, message, now_ms):
+    message = normalize_command(message)
     command = message.strip().split(maxsplit=1)[0].lower().split("@")[0] if message.strip() else ""
     help_text = HELP + ("\n/tf15 — сигналы 15м, тренд 1H; /tf1h — сигналы 1H, тренд 4H." if store.source == "exchange" else "")
+    if command in ("/start", "/menu"):
+        return "Меню бота: выберите кнопку под полем сообщения.\n" + help_text
     if command not in ("/btc", "/eth", "/status"):
         return help_text
     states = store.states()
@@ -102,10 +120,12 @@ class CommandWorker:
             if isinstance(chat, dict) and isinstance(source, dict) and str(chat.get("id", "")) == str(self.sender.chat_id):
                 text = message.get("text")
                 if isinstance(text, str) and not source.get("is_bot", False):
+                    text = normalize_command(text)
                     try:
                         answer = self.command_handler(text) if self.command_handler else None
                         self.sender.send(answer if answer is not None else
-                                         reply(self.store, text, int(time.time() * 1000) if now_ms is None else now_ms))
+                                         reply(self.store, text, int(time.time() * 1000) if now_ms is None else now_ms),
+                                         reply_markup=menu_keyboard(self.store))
                     except DeliveryError as exc:
                         if exc.retryable:
                             raise
