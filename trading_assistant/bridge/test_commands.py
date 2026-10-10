@@ -87,6 +87,36 @@ class CommandTests(unittest.TestCase):
         self.assertIn("Данные устарели", stale)
         self.assertNotIn("Сейчас фильтр", stale)
 
+    def test_assistant_explains_named_pair_and_never_uses_stale_plan(self):
+        self.store.source = "exchange"
+        self.store.ingest(event(event_id="python|btc"), NOW)
+        self.store.ingest(event(event_id="python|eth", symbol="BYBIT:ETHUSDT", setup_id="eth|1",
+                                event="context", stage="idle", entry=None, stop=None, target=None,
+                                rr=None, risk_pct=0, expires_at=None, trend="bearish"), NOW)
+        response = reply(self.store, "Почему нет входа по эфиру?", NOW)
+        self.assertIn("BYBIT:ETHUSDT", response)
+        self.assertNotIn("BTCUSDT", response)
+        self.assertIn("фильтр старшего ТФ", response)
+        ready = reply(self.store, "Что по BTC?", NOW)
+        self.assertIn("ещё не активирован", ready)
+        stale = reply(self.store, "Что по BTC?", NOW + 5401000)
+        self.assertIn("Текущий вход по нему рассматривать нельзя", stale)
+        self.assertNotIn("ещё не активирован", stale)
+
+    def test_assistant_limits_and_questions_do_not_switch_timeframe(self):
+        self.store.source = "exchange"
+        self.assertIn("предыдущих 20", reply(self.store, "Как работает стратегия?", NOW))
+        self.assertIn("0,5%", reply(self.store, "Какой риск?", NOW))
+        self.assertIn("определить нельзя", reply(self.store, "BTC вырастет завтра?", NOW))
+        self.assertIn("пока не распознан", reply(self.store, "Переключи таймфрейм на 15м", NOW))
+        self.assertIn("Можно написать", reply(self.store, "💬 Ассистент", NOW))
+        seen = []
+        sender = CommandSender([update(1, "Как работает стратегия?", chat=999),
+                                update(2, "Как работает стратегия?")])
+        CommandWorker(self.store, sender, command_handler=lambda text: seen.append(text)).poll_once(NOW)
+        self.assertEqual(seen, ["Как работает стратегия?"])
+        self.assertIn("Как работает стратегия", sender.messages[0])
+
     def test_latest_btc_and_status_come_only_from_stored_states(self):
         self.store.ingest(event(symbol="BYBIT:BTCUSDT.P", event_id="old", event_time=NOW - 1000), NOW)
         self.store.ingest(event(event_id="current", entry=200, stop=199, target=202), NOW)

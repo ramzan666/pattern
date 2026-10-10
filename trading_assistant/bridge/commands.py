@@ -7,6 +7,11 @@ import time
 from zoneinfo import ZoneInfo
 
 from .app import DeliveryError, snapshot_freshness, timeframe_label
+from .explanations import assistant_answer
+
+ASSISTANT_HELP = ('Можно написать: «Что по BTC?», «Почему нет входа по ETH?», '
+                  '«Какая ситуация на рынке?», «Как работает стратегия?», «Какой риск?». '
+                  'Ответы по данным и правилам бота, без платного ИИ. Другие вопросы могут не распознаваться.')
 
 HELP = "Команды: /btc — сценарий BTC, /eth — сценарий ETH, /status — все наблюдаемые инструменты."
 STAGES = {"idle": "Ждём пробой 1H", "waiting_retest": "Ждём ретест пробоя",
@@ -16,7 +21,7 @@ TRENDS = {"bullish": "бычий", "bearish": "медвежий", "neutral": "н
 MSK = ZoneInfo("Europe/Moscow")
 BUTTON_COMMANDS = {"₿ BTC": "/btc", "Ξ ETH": "/eth", "📊 Статус": "/status",
                    "⏱ 15м": "/tf15", "⏱ 1H": "/tf1h", "❓ Помощь": "/help",
-                   "🌍 Обзор рынка": "/market"}
+                   "🌍 Обзор рынка": "/market", "💬 Ассистент": "/assistant"}
 
 
 def normalize_command(message):
@@ -28,7 +33,7 @@ def menu_keyboard(store):
     rows = [["₿ BTC", "Ξ ETH"], ["📊 Статус", "❓ Помощь"]]
     if store.source == "exchange":
         rows.insert(1, ["⏱ 15м", "⏱ 1H"])
-        rows.insert(2, ["🌍 Обзор рынка"])
+        rows.insert(2, ["🌍 Обзор рынка", "💬 Ассистент"])
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True,
             "one_time_keyboard": False, "input_field_placeholder": "Выберите действие"}
 
@@ -74,6 +79,12 @@ def reply(store, message, now_ms):
     message = normalize_command(message)
     command = message.strip().split(maxsplit=1)[0].lower().split("@")[0] if message.strip() else ""
     help_text = HELP + ("\n/market — обзор наблюдаемых пар.\n/tf15 — сигналы 15м, тренд 1H; /tf1h — сигналы 1H, тренд 4H." if store.source == "exchange" else "")
+    if store.source == "exchange":
+        if command in ("/assistant", "/help"):
+            return ASSISTANT_HELP
+        answer = assistant_answer(store, message, now_ms)
+        if answer is not None:
+            return answer
     if command in ("/start", "/menu"):
         return "Меню бота: выберите кнопку под полем сообщения.\n" + help_text
     if command == "/market" and store.source == "exchange":
@@ -93,7 +104,7 @@ def reply(store, message, now_ms):
             blocks.append(block)
         return "\n\n".join(blocks)
     if command not in ("/btc", "/eth", "/status"):
-        return help_text
+        return ("Этот вопрос пока не распознан.\n" + ASSISTANT_HELP) if store.source == "exchange" else help_text
     states = store.states()
     if command == "/status":
         if not states:
