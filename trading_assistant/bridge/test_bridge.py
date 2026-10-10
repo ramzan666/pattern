@@ -148,7 +148,7 @@ class BridgeTests(unittest.TestCase):
     def test_russian_message_and_html_escape(self):
         message = render(event(reason="<script> & bad"))
         self.assertIn("Вход подготовлен", message)
-        self.assertIn("SL: 99 · TP: 102", message)
+        self.assertIn("SL: 99\n💰 TP: 102", message)
         self.assertIn("1:2", message)
         self.assertIn("&lt;script&gt; &amp; bad", message)
         self.assertIn("symbol=BINANCE%3ABTCUSDT", message)

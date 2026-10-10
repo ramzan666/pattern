@@ -232,31 +232,31 @@ def timeframe_label(value):
 
 
 def render(data):
-    titles = {"context": "Обновление тренда", "breakout": "Пробой — ждём ретест",
-              "setup": "Вход подготовлен", "trigger": "Условие входа выполнено",
-              "cancel": "Сценарий отменён", "exit": "Условие выхода выполнено"}
+    titles = {"context": "🔎 Обновление тренда", "breakout": "⏳ Пробой — ждём ретест",
+              "setup": "🎯 Вход подготовлен", "trigger": "▶️ Условие входа выполнено",
+              "cancel": "🚫 Сценарий отменён", "exit": "🏁 Условие выхода выполнено"}
     trends = {"bullish": "бычий", "bearish": "медвежий", "neutral": "нейтральный"}
     direction = {"long": "LONG", "short": "SHORT", "none": "НАБЛЮДЕНИЕ"}[data["direction"]]
     # Keep original Pine payloads compatible; Python includes its selected trend TF.
     trend_tf = timeframe_label(data.get("trend_timeframe", "240"))
     signal_tf = timeframe_label(data["timeframe"])
     parts = [
-        f"<b>{html.escape(data['symbol'])} · {direction}</b>",
-        titles[data["event"]],
-        f"Тренд {trend_tf}: {trends[data['trend']]} · сигналы {signal_tf}",
+        f"📌 <b>{html.escape(data['symbol'])} · {direction}</b>", "",
+        f"<b>{titles[data['event']]}</b>",
+        f"⏱ Тренд {trend_tf}: {trends[data['trend']]} · сигналы {signal_tf}",
     ]
     if data["entry"] is not None:
         number = lambda value: format(value, ".10g") if value is not None else "—"
-        parts.extend([f"Вход: <b>{number(data['entry'])}</b>",
-                      f"SL: {number(data['stop'])} · TP: {number(data['target'])}",
-                      f"RR: 1:{number(data['rr'])} · риск: {number(data['risk_pct'])}%"])
+        parts.extend(["", f"🎯 Вход: <b>{number(data['entry'])}</b>",
+                      f"🛑 SL: {number(data['stop'])}", f"💰 TP: {number(data['target'])}",
+                      f"⚖️ RR: 1:{number(data['rr'])} · риск: {number(data['risk_pct'])}%", ""])
     if data["event"] == "setup":
         parts.append("Ждём достижения уровня. Позиция ещё не открыта.")
     if data["event"] == "trigger":
         parts.append("Сигнал стратегии; фактическое исполнение на бирже не подтверждено.")
     if data["reason"]:
-        parts.append(html.escape(data["reason"]))
-    parts.append(f'<a href="https://www.tradingview.com/chart/?symbol={parse.quote(data["symbol"], safe="")}&amp;interval={data["timeframe"]}">Открыть график</a>')
+        parts.append("📝 " + html.escape(data["reason"]))
+    parts.extend(["", f'📈 <a href="https://www.tradingview.com/chart/?symbol={parse.quote(data["symbol"], safe="")}&amp;interval={data["timeframe"]}">Открыть график</a>'])
     return "\n".join(parts)
 
 

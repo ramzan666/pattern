@@ -9,9 +9,12 @@ from zoneinfo import ZoneInfo
 from .app import DeliveryError, snapshot_freshness, timeframe_label
 from .explanations import assistant_answer
 
-ASSISTANT_HELP = ('Можно написать: «Что по BTC?», «Почему нет входа по ETH?», '
-                  '«Какая ситуация на рынке?», «Как работает стратегия?», «Какой риск?». '
-                  'Ответы по данным и правилам бота, без платного ИИ. Другие вопросы могут не распознаваться.')
+ASSISTANT_HELP = ('💬 <b>Давай разберём ситуацию</b>\n\n'
+                  'Можно написать:\n'
+                  '• Что по BTC?\n• Почему нет входа по ETH?\n'
+                  '• Какая ситуация на рынке?\n• Как работает стратегия?\n• Какой риск?\n\n'
+                  '📌 Отвечаю по данным и правилам бота, без платного ИИ. '
+                  'Если вопрос не распознается, попробуй один из примеров выше.')
 
 HELP = "Команды: /btc — сценарий BTC, /eth — сценарий ETH, /status — все наблюдаемые инструменты."
 STAGES = {"idle": "Ждём пробой 1H", "waiting_retest": "Ждём ретест пробоя",
@@ -51,9 +54,12 @@ def describe(data, now_ms, max_age, compact=False):
                  "closed": "Виртуальная сделка бота завершена",
                  "idle": f"Ждём пробой {timeframe_label(data['timeframe'])}"}.get(data["stage"], stage)
     trend_tf = timeframe_label(data.get("trend_timeframe", "240"))
-    text = [f"<b>{html.escape(data['symbol'])}</b>",
-            f"Тренд {trend_tf}: {TRENDS[data['trend']]}",
-            f"ТФ сигналов: {timeframe_label(data['timeframe'])}", stage]
+    trend_icon = {"bullish": "🟢", "bearish": "🔴", "neutral": "⚪"}[data["trend"]]
+    stage_icon = {"idle": "🔎", "waiting_retest": "⏳", "armed": "🎯",
+                  "active": "▶️", "canceled": "🚫", "closed": "🏁"}[data["stage"]]
+    text = [f"📌 <b>{html.escape(data['symbol'])}</b>", "",
+            f"{trend_icon} Тренд {trend_tf}: {TRENDS[data['trend']]}",
+            f"⏱ ТФ сигналов: {timeframe_label(data['timeframe'])}", f"{stage_icon} {stage}"]
     if stale:
         expired = data["expires_at"] is not None and data["stage"] in ("waiting_retest", "armed") and now_ms >= data["expires_at"]
         stale_message = "⚠️ Данные устарели; нужны свежие свечи Bybit." if autonomous else "⚠️ Данные устарели; нужен свежий снимок TradingView."
@@ -61,17 +67,17 @@ def describe(data, now_ms, max_age, compact=False):
     if not compact:
         if data["stage"] in ("armed", "active"):
             number = lambda value: format(value, ".10g")
-            text.extend([f"{data['direction'].upper()} · вход {number(data['entry'])}",
-                         f"SL {number(data['stop'])} · TP {number(data['target'])} · RR 1:{number(data['rr'])}",
-                         f"Плановый риск до издержек: {number(data['risk_pct'])}%"])
+            text.extend(["", f"🎯 {data['direction'].upper()} · вход {number(data['entry'])}",
+                         f"🛑 SL {number(data['stop'])}", f"💰 TP {number(data['target'])} · RR 1:{number(data['rr'])}",
+                         f"⚖️ Плановый риск до издержек: {number(data['risk_pct'])}%"])
             if data["stage"] == "active":
                 text.append("Показана виртуальная сделка бота; ордер на бирже не размещался." if autonomous else
                             "Биржевой позиции бот не видит; показано состояние симулятора.")
         if data["expires_at"] is not None:
-            text.append("Срок ожидания: " + date_text(data["expires_at"]))
+            text.append("⌛ Срок ожидания: " + date_text(data["expires_at"]))
         if data["reason"]:
-            text.append(html.escape(data["reason"]))
-    text.append("Снимок: " + date_text(data["event_time"]))
+            text.extend(["", "📝 " + html.escape(data["reason"])])
+    text.extend(["", "🕒 Снимок: " + date_text(data["event_time"])])
     return "\n".join(text)
 
 
@@ -86,25 +92,26 @@ def reply(store, message, now_ms):
         if answer is not None:
             return answer
     if command in ("/start", "/menu"):
-        return "Меню бота: выберите кнопку под полем сообщения.\n" + help_text
+        return "👋 <b>Меню бота</b>\nВыберите кнопку под полем сообщения.\n\n" + help_text
     if command == "/market" and store.source == "exchange":
         states = store.states()
         if not states:
             return "Пока нет свечей Bybit для обзора рынка."
-        blocks = ["<b>Обзор рынка · Bybit</b>",
-                  "По наблюдаемым парам; новости и другие монеты не учитываются."]
+        blocks = ["🌍 <b>Обзор рынка · Bybit</b>\n"
+                  "Смотрим текущие условия по наблюдаемым парам.\n"
+                  "📌 новости и другие монеты не учитываются."]
         for data in states[:10]:
             block = describe(data, now_ms, store.state_max_age)
             _, stale = snapshot_freshness(data, now_ms, store.state_max_age)
             if not stale and data["stage"] == "idle":
-                block += ("\nБычий фильтр выполнен. Для входа ещё нужны пробой и ретест." if data["trend"] == "bullish" else
-                          "\nСейчас фильтр стратегии не разрешает LONG; ждём изменения условий.")
+                block += ("\n\n💡 Бычий фильтр выполнен. Для входа ещё нужны пробой и ретест." if data["trend"] == "bullish" else
+                          "\n\n💡 Сейчас фильтр стратегии не разрешает LONG; ждём изменения условий.")
             if len("\n\n".join(blocks + [block])) > 3500:
                 break
             blocks.append(block)
         return "\n\n".join(blocks)
     if command not in ("/btc", "/eth", "/status"):
-        return ("Этот вопрос пока не распознан.\n" + ASSISTANT_HELP) if store.source == "exchange" else help_text
+        return ("🤔 Этот вопрос пока не распознан.\n\n" + ASSISTANT_HELP) if store.source == "exchange" else help_text
     states = store.states()
     if command == "/status":
         if not states:
